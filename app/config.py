@@ -1,0 +1,8 @@
+import os
+
+EXPECTED_FEATURE_VERSION = os.getenv(
+    "EXPECTED_FEATURE_VERSION",
+    "v8",
+)
+
+EXPECTED_FEATURES = 62
