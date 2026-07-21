@@ -22,6 +22,18 @@ from app.service.prediction_service import (
     predict,
 )
 
+from app.dto.batch_prediction_request import (
+    BatchPredictionRequest,
+)
+
+from app.dto.batch_prediction_response import (
+    BatchPredictionResponse,
+)
+
+from app.service.batch_prediction_service import (
+    predict_batch,
+)
+
 
 logging.basicConfig(
     level=logging.INFO,
@@ -113,6 +125,32 @@ def predict_endpoint(
             status_code=500,
             detail=(
                 "Unexpected internal "
+                "prediction error"
+            ),
+        ) from exc
+        
+@app.post(
+    "/predict/batch",
+    response_model=BatchPredictionResponse,
+)
+def predict_batch_endpoint(
+    request: BatchPredictionRequest,
+) -> BatchPredictionResponse:
+
+    try:
+        return predict_batch(
+            request
+        )
+
+    except Exception as exc:
+        logger.exception(
+            "Unhandled error in /predict/batch"
+        )
+
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                "Unexpected internal batch "
                 "prediction error"
             ),
         ) from exc

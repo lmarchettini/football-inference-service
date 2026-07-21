@@ -5,6 +5,8 @@ from typing import Any
 import joblib
 import numpy as np
 
+from threading import Lock
+
 from app.config import (
     EXPECTED_FEATURES,
     EXPECTED_FEATURE_VERSION,
@@ -16,6 +18,11 @@ from app.dto.prediction_response import (
 
 
 logger = logging.getLogger(__name__)
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+
+_MODEL_CACHE: dict[Path, Any] = {}
+_MODEL_CACHE_LOCK = Lock()
 
 
 class PredictionValidationError(ValueError):
@@ -55,9 +62,19 @@ def predict(request) -> PredictionResponse:
     try:
         _validate_request(request)
 
-        model_path = Path(
+        model_path = _resolve_model_path(
             request.model_path
-        ).expanduser()
+        )
+
+        logger.info(
+            "Resolved model path: "
+            "market=%s, requested_path=%s, "
+            "resolved_path=%s, cwd=%s",
+            request.market,
+            request.model_path,
+            model_path,
+            Path.cwd(),
+        )
 
         model = _load_model(
             model_path=model_path,
@@ -220,6 +237,23 @@ def _validate_request(request) -> None:
             "Features cannot contain NaN "
             "or infinite values"
         )
+        
+
+def _resolve_model_path(
+    raw_model_path: str,
+) -> Path:
+
+    requested_path = Path(
+        raw_model_path
+    ).expanduser()
+
+    if requested_path.is_absolute():
+        return requested_path.resolve()
+
+    return (
+        PROJECT_ROOT
+        / requested_path
+    ).resolve()
 
 
 def _load_model(
@@ -227,58 +261,96 @@ def _load_model(
     market: str,
 ) -> Any:
 
-    if not model_path.exists():
+    resolved_path = model_path.resolve()
+
+    if not resolved_path.exists():
         logger.error(
             "Model file not found: "
             "market=%s, path=%s",
             market,
-            model_path,
+            resolved_path,
         )
 
         raise ModelNotFoundError(
-            f"Model file not found: {model_path}"
+            f"Model file not found: {resolved_path}"
         )
 
-    if not model_path.is_file():
+    if not resolved_path.is_file():
         logger.error(
             "Model path is not a file: "
             "market=%s, path=%s",
             market,
-            model_path,
+            resolved_path,
         )
 
         raise ModelNotFoundError(
             f"Model path is not a file: "
-            f"{model_path}"
+            f"{resolved_path}"
         )
 
-    try:
-        model = joblib.load(
-            model_path
-        )
+    cached_model = _MODEL_CACHE.get(
+        resolved_path
+    )
 
-        logger.info(
-            "Model loaded successfully: "
-            "market=%s, path=%s, type=%s",
-            market,
-            model_path,
-            type(model).__name__,
-        )
-
-        return model
-
-    except Exception as exc:
-        logger.exception(
-            "Failed to load model: "
+    if cached_model is not None:
+        logger.debug(
+            "Using cached model: "
             "market=%s, path=%s",
             market,
-            model_path,
+            resolved_path,
         )
 
-        raise ModelLoadError(
-            f"Failed to load model: "
-            f"{model_path}"
-        ) from exc
+        return cached_model
+
+    with _MODEL_CACHE_LOCK:
+
+        # Un altro thread potrebbe aver caricato il modello
+        # mentre aspettavamo il lock.
+        cached_model = _MODEL_CACHE.get(
+            resolved_path
+        )
+
+        if cached_model is not None:
+            return cached_model
+
+        try:
+            logger.info(
+                "Loading model from disk: "
+                "market=%s, path=%s",
+                market,
+                resolved_path,
+            )
+
+            model = joblib.load(
+                resolved_path
+            )
+
+            _MODEL_CACHE[
+                resolved_path
+            ] = model
+
+            logger.info(
+                "Model loaded and cached: "
+                "market=%s, path=%s, type=%s",
+                market,
+                resolved_path,
+                type(model).__name__,
+            )
+
+            return model
+
+        except Exception as exc:
+            logger.exception(
+                "Failed to load model: "
+                "market=%s, path=%s",
+                market,
+                resolved_path,
+            )
+
+            raise ModelLoadError(
+                f"Failed to load model: "
+                f"{resolved_path}"
+            ) from exc
 
 
 def _validate_model(
