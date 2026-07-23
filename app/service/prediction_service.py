@@ -16,6 +16,12 @@ from app.dto.prediction_response import (
     PredictionResponse,
 )
 
+from app.config import (
+    EXPECTED_FEATURES,
+    EXPECTED_FEATURE_VERSION,
+    is_market_enabled,
+)
+
 
 logger = logging.getLogger(__name__)
 
@@ -27,6 +33,11 @@ _MODEL_CACHE_LOCK = Lock()
 
 class PredictionValidationError(ValueError):
     """Errore nei dati ricevuti dal client."""
+    
+class MarketDisabledError(
+        RuntimeError
+):
+    """Market disabled."""
 
 
 class ModelNotFoundError(FileNotFoundError):
@@ -58,6 +69,13 @@ def predict(request) -> PredictionResponse:
         else None,
         request.model_path,
     )
+    
+    if not is_market_enabled(
+        request.market
+):
+        raise MarketDisabledError(
+            f"Market '{request.market}' is disabled."
+        )
 
     try:
         _validate_request(request)

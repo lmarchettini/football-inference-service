@@ -11,6 +11,7 @@ from app.dto.batch_prediction_response import (
 )
 
 from app.service.prediction_service import (
+    MarketDisabledError,
     ModelCompatibilityError,
     ModelLoadError,
     ModelNotFoundError,
@@ -47,6 +48,7 @@ def predict_batch(
             prediction = predict(
                 item
             )
+            
 
             predictions.append(
                 BatchPredictionResult(
@@ -61,6 +63,18 @@ def predict_batch(
                     ),
                 )
             )
+        
+        except MarketDisabledError as exc:
+
+            failures.append(
+                _build_failure(
+                    fixture_id=item.fixture_id,
+                    market=item.market,
+                    code="MARKET_DISABLED",
+                    exception=exc,
+                )
+            )
+            
 
         except PredictionValidationError as exc:
             failures.append(

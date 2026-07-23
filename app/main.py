@@ -20,6 +20,7 @@ from app.service.prediction_service import (
     PredictionExecutionError,
     PredictionValidationError,
     predict,
+    MarketDisabledError
 )
 
 from app.dto.batch_prediction_request import (
@@ -62,12 +63,20 @@ def predict_endpoint(
         return predict(
             request
         )
+        
 
     except PredictionValidationError as exc:
         logger.warning(
             "Invalid prediction request: %s",
             exc,
         )
+
+        raise HTTPException(
+            status_code=400,
+            detail=str(exc),
+        ) from exc
+        
+    except MarketDisabledError as exc:
 
         raise HTTPException(
             status_code=400,
