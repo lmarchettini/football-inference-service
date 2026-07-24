@@ -10,22 +10,19 @@ from threading import Lock
 from app.config import (
     EXPECTED_FEATURES,
     EXPECTED_FEATURE_VERSION,
+    is_market_enabled,
+)
+
+from app.model_storage import (
+    MODEL_ARTIFACTS_DIR,
 )
 
 from app.dto.prediction_response import (
     PredictionResponse,
 )
 
-from app.config import (
-    EXPECTED_FEATURES,
-    EXPECTED_FEATURE_VERSION,
-    is_market_enabled,
-)
-
-
 logger = logging.getLogger(__name__)
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 _MODEL_CACHE: dict[Path, Any] = {}
 _MODEL_CACHE_LOCK = Lock()
@@ -33,10 +30,9 @@ _MODEL_CACHE_LOCK = Lock()
 
 class PredictionValidationError(ValueError):
     """Errore nei dati ricevuti dal client."""
-    
-class MarketDisabledError(
-        RuntimeError
-):
+
+
+class MarketDisabledError(RuntimeError):
     """Market disabled."""
 
 
@@ -64,25 +60,17 @@ def predict(request) -> PredictionResponse:
         "features_count=%s, model_path=%s",
         request.market,
         request.feature_version,
-        len(request.features)
-        if request.features is not None
-        else None,
+        len(request.features) if request.features is not None else None,
         request.model_path,
     )
-    
-    if not is_market_enabled(
-        request.market
-):
-        raise MarketDisabledError(
-            f"Market '{request.market}' is disabled."
-        )
+
+    if not is_market_enabled(request.market):
+        raise MarketDisabledError(f"Market '{request.market}' is disabled.")
 
     try:
         _validate_request(request)
 
-        model_path = _resolve_model_path(
-            request.model_path
-        )
+        model_path = _resolve_model_path(request.model_path)
 
         logger.info(
             "Resolved model path: "
@@ -101,16 +89,12 @@ def predict(request) -> PredictionResponse:
 
         _validate_model(
             model=model,
-            features_count=len(
-                request.features
-            ),
+            features_count=len(request.features),
         )
 
-        probability, negative_probability = (
-            _predict_probabilities(
-                model=model,
-                features=request.features,
-            )
+        probability, negative_probability = _predict_probabilities(
+            model=model,
+            features=request.features,
         )
 
         response = PredictionResponse(
@@ -169,38 +153,26 @@ def predict(request) -> PredictionResponse:
             ),
         )
 
-        raise PredictionExecutionError(
-            "Unexpected error during prediction"
-        ) from exc
+        raise PredictionExecutionError("Unexpected error during prediction") from exc
 
 
 def _validate_request(request) -> None:
 
-    if request.feature_version != (
-        EXPECTED_FEATURE_VERSION
-    ):
+    if request.feature_version != (EXPECTED_FEATURE_VERSION):
         message = (
             "Feature version mismatch: "
             f"expected={EXPECTED_FEATURE_VERSION}, "
             f"received={request.feature_version}"
         )
 
-        logger.warning(
-            message
-        )
+        logger.warning(message)
 
-        raise PredictionValidationError(
-            message
-        )
+        raise PredictionValidationError(message)
 
     if request.features is None:
-        raise PredictionValidationError(
-            "Features are required"
-        )
+        raise PredictionValidationError("Features are required")
 
-    received_features = len(
-        request.features
-    )
+    received_features = len(request.features)
 
     if received_features != EXPECTED_FEATURES:
         message = (
@@ -215,25 +187,13 @@ def _validate_request(request) -> None:
             request.market,
         )
 
-        raise PredictionValidationError(
-            message
-        )
+        raise PredictionValidationError(message)
 
-    if (
-        request.model_path is None
-        or not request.model_path.strip()
-    ):
-        raise PredictionValidationError(
-            "Model path is required"
-        )
+    if request.model_path is None or not request.model_path.strip():
+        raise PredictionValidationError("Model path is required")
 
-    if (
-        request.market is None
-        or not request.market.strip()
-    ):
-        raise PredictionValidationError(
-            "Market is required"
-        )
+    if request.market is None or not request.market.strip():
+        raise PredictionValidationError("Market is required")
 
     try:
         features_array = np.asarray(
@@ -244,34 +204,47 @@ def _validate_request(request) -> None:
         TypeError,
         ValueError,
     ) as exc:
-        raise PredictionValidationError(
-            "All features must be numeric"
-        ) from exc
+        raise PredictionValidationError("All features must be numeric") from exc
 
-    if not np.all(
-        np.isfinite(features_array)
-    ):
+    if not np.all(np.isfinite(features_array)):
         raise PredictionValidationError(
-            "Features cannot contain NaN "
-            "or infinite values"
+            "Features cannot contain NaN " "or infinite values"
         )
-        
+
 
 def _resolve_model_path(
     raw_model_path: str,
 ) -> Path:
 
-    requested_path = Path(
-        raw_model_path
-    ).expanduser()
+    requested_path = Path(raw_model_path).expanduser()
 
+    # Compatibilità temporanea con eventuali path assoluti
+    # già salvati nel Model Management.
     if requested_path.is_absolute():
         return requested_path.resolve()
 
-    return (
-        PROJECT_ROOT
-        / requested_path
-    ).resolve()
+    path_parts = requested_path.parts
+
+    # Compatibilità con i vecchi valori:
+    #
+    # saved_models/home_win_v9.pkl
+    #
+    # Diventa:
+    #
+    # home_win_v9.pkl
+    if path_parts and path_parts[0].lower() == "saved_models":
+        requested_path = Path(*path_parts[1:])
+
+    resolved_path = (MODEL_ARTIFACTS_DIR / requested_path).resolve()
+
+    artifacts_root = MODEL_ARTIFACTS_DIR.resolve()
+
+    # Impedisce path traversal come:
+    # ../../qualcosa.pkl
+    if resolved_path != artifacts_root and artifacts_root not in resolved_path.parents:
+        raise PredictionValidationError("Invalid model path: " f"{raw_model_path}")
+
+    return resolved_path
 
 
 def _load_model(
@@ -283,37 +256,27 @@ def _load_model(
 
     if not resolved_path.exists():
         logger.error(
-            "Model file not found: "
-            "market=%s, path=%s",
+            "Model file not found: " "market=%s, path=%s",
             market,
             resolved_path,
         )
 
-        raise ModelNotFoundError(
-            f"Model file not found: {resolved_path}"
-        )
+        raise ModelNotFoundError(f"Model file not found: {resolved_path}")
 
     if not resolved_path.is_file():
         logger.error(
-            "Model path is not a file: "
-            "market=%s, path=%s",
+            "Model path is not a file: " "market=%s, path=%s",
             market,
             resolved_path,
         )
 
-        raise ModelNotFoundError(
-            f"Model path is not a file: "
-            f"{resolved_path}"
-        )
+        raise ModelNotFoundError(f"Model path is not a file: " f"{resolved_path}")
 
-    cached_model = _MODEL_CACHE.get(
-        resolved_path
-    )
+    cached_model = _MODEL_CACHE.get(resolved_path)
 
     if cached_model is not None:
         logger.debug(
-            "Using cached model: "
-            "market=%s, path=%s",
+            "Using cached model: " "market=%s, path=%s",
             market,
             resolved_path,
         )
@@ -324,32 +287,30 @@ def _load_model(
 
         # Un altro thread potrebbe aver caricato il modello
         # mentre aspettavamo il lock.
-        cached_model = _MODEL_CACHE.get(
-            resolved_path
-        )
+        cached_model = _MODEL_CACHE.get(resolved_path)
 
         if cached_model is not None:
             return cached_model
 
         try:
             logger.info(
-                "Loading model from disk: "
-                "market=%s, path=%s",
+                "Loading model from disk: " "market=%s, path=%s",
                 market,
                 resolved_path,
             )
 
-            model = joblib.load(
-                resolved_path
-            )
-
-            _MODEL_CACHE[
-                resolved_path
-            ] = model
+            model = joblib.load(resolved_path)
 
             logger.info(
-                "Model loaded and cached: "
-                "market=%s, path=%s, type=%s",
+                "Loaded model path=%s type=%s",
+                model_path,
+                type(model).__name__,
+            )
+
+            _MODEL_CACHE[resolved_path] = model
+
+            logger.info(
+                "Model loaded and cached: " "market=%s, path=%s, type=%s",
                 market,
                 resolved_path,
                 type(model).__name__,
@@ -359,16 +320,12 @@ def _load_model(
 
         except Exception as exc:
             logger.exception(
-                "Failed to load model: "
-                "market=%s, path=%s",
+                "Failed to load model: " "market=%s, path=%s",
                 market,
                 resolved_path,
             )
 
-            raise ModelLoadError(
-                f"Failed to load model: "
-                f"{resolved_path}"
-            ) from exc
+            raise ModelLoadError(f"Failed to load model: " f"{resolved_path}") from exc
 
 
 def _validate_model(
@@ -380,10 +337,7 @@ def _validate_model(
         model,
         "predict_proba",
     ):
-        raise ModelCompatibilityError(
-            "Loaded model does not support "
-            "predict_proba"
-        )
+        raise ModelCompatibilityError("Loaded model does not support " "predict_proba")
 
     expected_by_model = getattr(
         model,
@@ -391,24 +345,16 @@ def _validate_model(
         None,
     )
 
-    if (
-        expected_by_model is not None
-        and expected_by_model
-        != features_count
-    ):
+    if expected_by_model is not None and expected_by_model != features_count:
         message = (
             "Model feature count mismatch: "
             f"model_expected={expected_by_model}, "
             f"received={features_count}"
         )
 
-        logger.error(
-            message
-        )
+        logger.error(message)
 
-        raise ModelCompatibilityError(
-            message
-        )
+        raise ModelCompatibilityError(message)
 
     classes = getattr(
         model,
@@ -417,9 +363,7 @@ def _validate_model(
     )
 
     if classes is None:
-        raise ModelCompatibilityError(
-            "Loaded model does not expose classes_"
-        )
+        raise ModelCompatibilityError("Loaded model does not expose classes_")
 
     if 0 not in classes or 1 not in classes:
         raise ModelCompatibilityError(
@@ -442,27 +386,18 @@ def _predict_probabilities(
             dtype=float,
         )
 
-        probabilities = model.predict_proba(
-            input_data
-        )
+        probabilities = model.predict_proba(input_data)
 
         if probabilities.shape[0] != 1:
             raise ModelCompatibilityError(
-                "Unexpected predict_proba output: "
-                f"shape={probabilities.shape}"
+                "Unexpected predict_proba output: " f"shape={probabilities.shape}"
             )
 
-        classes = list(
-            model.classes_
-        )
+        classes = list(model.classes_)
 
-        positive_index = classes.index(
-            1
-        )
+        positive_index = classes.index(1)
 
-        negative_index = classes.index(
-            0
-        )
+        negative_index = classes.index(0)
 
         probability = float(
             probabilities[
@@ -478,15 +413,9 @@ def _predict_probabilities(
             ]
         )
 
-        if not (
-            0.0 <= probability <= 1.0
-            and 0.0
-            <= negative_probability
-            <= 1.0
-        ):
+        if not (0.0 <= probability <= 1.0 and 0.0 <= negative_probability <= 1.0):
             raise ModelCompatibilityError(
-                "Model returned invalid "
-                "probability values"
+                "Model returned invalid " "probability values"
             )
 
         return (
@@ -498,10 +427,6 @@ def _predict_probabilities(
         raise
 
     except Exception as exc:
-        logger.exception(
-            "Model predict_proba failed"
-        )
+        logger.exception("Model predict_proba failed")
 
-        raise PredictionExecutionError(
-            "Model prediction failed"
-        ) from exc
+        raise PredictionExecutionError("Model prediction failed") from exc
