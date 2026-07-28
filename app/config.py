@@ -1,7 +1,7 @@
 import os
 
 ENABLED_MARKETS = {
-    market.strip()
+    market.strip().lower()
     for market in os.getenv(
         "ENABLED_MARKETS",
         "*",
@@ -9,18 +9,14 @@ ENABLED_MARKETS = {
     if market.strip()
 }
 
+
 def is_market_enabled(
-        market: str,
+    market: str,
 ) -> bool:
 
-    return (
-        "*" in ENABLED_MARKETS
-        or market in ENABLED_MARKETS
-    )
+    if market is None:
+        return False
 
-EXPECTED_FEATURE_VERSION = os.getenv(
-    "EXPECTED_FEATURE_VERSION",
-    "v8",
-)
+    normalized_market = market.strip().lower()
 
-EXPECTED_FEATURES = 62
+    return "*" in ENABLED_MARKETS or normalized_market in ENABLED_MARKETS

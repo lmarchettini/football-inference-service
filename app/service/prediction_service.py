@@ -8,8 +8,6 @@ import numpy as np
 from threading import Lock
 
 from app.config import (
-    EXPECTED_FEATURES,
-    EXPECTED_FEATURE_VERSION,
     is_market_enabled,
 )
 
@@ -56,11 +54,10 @@ def predict(request) -> PredictionResponse:
 
     logger.info(
         "Prediction request received: "
-        "market=%s, feature_version=%s, "
-        "features_count=%s, model_path=%s",
+        "market=%s, features_count=%s, "
+        "model_path=%s",
         request.market,
-        request.feature_version,
-        len(request.features) if request.features is not None else None,
+        (len(request.features) if request.features is not None else None),
         request.model_path,
     )
 
@@ -133,17 +130,10 @@ def predict(request) -> PredictionResponse:
 
     except Exception as exc:
         logger.exception(
-            "Unexpected prediction error: "
-            "market=%s, feature_version=%s, "
-            "model_path=%s",
+            "Unexpected prediction error: " "market=%s, model_path=%s",
             getattr(
                 request,
                 "market",
-                None,
-            ),
-            getattr(
-                request,
-                "feature_version",
                 None,
             ),
             getattr(
@@ -156,38 +146,9 @@ def predict(request) -> PredictionResponse:
         raise PredictionExecutionError("Unexpected error during prediction") from exc
 
 
-def _validate_request(request) -> None:
-
-    if request.feature_version != (EXPECTED_FEATURE_VERSION):
-        message = (
-            "Feature version mismatch: "
-            f"expected={EXPECTED_FEATURE_VERSION}, "
-            f"received={request.feature_version}"
-        )
-
-        logger.warning(message)
-
-        raise PredictionValidationError(message)
-
-    if request.features is None:
-        raise PredictionValidationError("Features are required")
-
-    received_features = len(request.features)
-
-    if received_features != EXPECTED_FEATURES:
-        message = (
-            "Feature count mismatch: "
-            f"expected={EXPECTED_FEATURES}, "
-            f"received={received_features}"
-        )
-
-        logger.warning(
-            "%s, market=%s",
-            message,
-            request.market,
-        )
-
-        raise PredictionValidationError(message)
+def _validate_request(
+    request,
+) -> None:
 
     if request.model_path is None or not request.model_path.strip():
         raise PredictionValidationError("Model path is required")
@@ -195,21 +156,67 @@ def _validate_request(request) -> None:
     if request.market is None or not request.market.strip():
         raise PredictionValidationError("Market is required")
 
+    if request.features is None:
+        raise PredictionValidationError("Features are required")
+
+    if not request.features:
+        raise PredictionValidationError("Features cannot be empty")
+
     try:
         features_array = np.asarray(
             request.features,
             dtype=float,
         )
+
     except (
         TypeError,
         ValueError,
     ) as exc:
+
         raise PredictionValidationError("All features must be numeric") from exc
+
+    if features_array.ndim != 1:
+        raise PredictionValidationError("Features must be a " "one-dimensional vector")
 
     if not np.all(np.isfinite(features_array)):
         raise PredictionValidationError(
-            "Features cannot contain NaN " "or infinite values"
+            "Features cannot contain " "NaN or infinite values"
         )
+
+
+def _resolve_model_feature_count(
+    model: Any,
+) -> int | None:
+
+    expected_by_model = getattr(
+        model,
+        "n_features_in_",
+        None,
+    )
+
+    if expected_by_model is not None:
+        return int(expected_by_model)
+
+    get_booster = getattr(
+        model,
+        "get_booster",
+        None,
+    )
+
+    if callable(get_booster):
+
+        try:
+            booster = get_booster()
+
+            return int(booster.num_features())
+
+        except Exception:
+            logger.debug(
+                "Unable to resolve feature count " "through XGBoost booster",
+                exc_info=True,
+            )
+
+    return None
 
 
 def _resolve_model_path(
@@ -337,24 +344,27 @@ def _validate_model(
         model,
         "predict_proba",
     ):
-        raise ModelCompatibilityError("Loaded model does not support " "predict_proba")
+        raise ModelCompatibilityError("Loaded model does not " "support predict_proba")
 
-    expected_by_model = getattr(
-        model,
-        "n_features_in_",
-        None,
-    )
+    expected_by_model = _resolve_model_feature_count(model)
 
     if expected_by_model is not None and expected_by_model != features_count:
         message = (
             "Model feature count mismatch: "
-            f"model_expected={expected_by_model}, "
+            f"model_expected="
+            f"{expected_by_model}, "
             f"received={features_count}"
         )
 
         logger.error(message)
 
         raise ModelCompatibilityError(message)
+
+    if expected_by_model is None:
+        logger.warning(
+            "Unable to determine expected " "feature count from model type=%s",
+            type(model).__name__,
+        )
 
     classes = getattr(
         model,
@@ -363,13 +373,16 @@ def _validate_model(
     )
 
     if classes is None:
-        raise ModelCompatibilityError("Loaded model does not expose classes_")
+        raise ModelCompatibilityError("Loaded model does not " "expose classes_")
 
-    if 0 not in classes or 1 not in classes:
+    classes_list = list(classes)
+
+    if 0 not in classes_list or 1 not in classes_list:
         raise ModelCompatibilityError(
             "Binary model must contain "
             "classes 0 and 1; "
-            f"received classes={classes.tolist()}"
+            f"received classes="
+            f"{classes_list}"
         )
 
 

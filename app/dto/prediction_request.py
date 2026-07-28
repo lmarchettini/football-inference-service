@@ -7,23 +7,13 @@ from pydantic import (
 
 class PredictionRequest(BaseModel):
 
-    model_path: str = Field(
-        min_length=1
-    )
+    model_path: str = Field(min_length=1)
 
-    market: str = Field(
-        min_length=1
-    )
-
-    feature_version: str = Field(
-        min_length=1
-    )
+    market: str = Field(min_length=1)
 
     features: list[float]
 
-    @field_validator(
-        "features"
-    )
+    @field_validator("features")
     @classmethod
     def validate_features(
         cls,
@@ -31,8 +21,6 @@ class PredictionRequest(BaseModel):
     ) -> list[float]:
 
         if not values:
-            raise ValueError(
-                "Features cannot be empty"
-            )
+            raise ValueError("Features cannot be empty")
 
         return values
