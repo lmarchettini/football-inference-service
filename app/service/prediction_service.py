@@ -8,7 +8,9 @@ import numpy as np
 from threading import Lock
 
 from app.config import (
+    get_inverse_source_market,
     is_market_enabled,
+    normalize_market,
 )
 
 from app.model_storage import (
@@ -52,17 +54,34 @@ class PredictionExecutionError(RuntimeError):
 
 def predict(request) -> PredictionResponse:
 
+    requested_market = normalize_market(request.market)
+
+    source_market = (
+        get_inverse_source_market(requested_market)
+        if requested_market is not None
+        else None
+    )
+
+    effective_model_market = (
+        source_market if source_market is not None else requested_market
+    )
+
     logger.info(
         "Prediction request received: "
-        "market=%s, features_count=%s, "
+        "requested_market=%s, "
+        "effective_model_market=%s, "
+        "derived_inverse=%s, "
+        "features_count=%s, "
         "model_path=%s",
-        request.market,
+        requested_market,
+        effective_model_market,
+        source_market is not None,
         (len(request.features) if request.features is not None else None),
         request.model_path,
     )
 
-    if not is_market_enabled(request.market):
-        raise MarketDisabledError(f"Market '{request.market}' is disabled.")
+    if not is_market_enabled(requested_market):
+        raise MarketDisabledError(f"Market '{request.market}' " "is disabled.")
 
     try:
         _validate_request(request)
@@ -71,9 +90,13 @@ def predict(request) -> PredictionResponse:
 
         logger.info(
             "Resolved model path: "
-            "market=%s, requested_path=%s, "
-            "resolved_path=%s, cwd=%s",
-            request.market,
+            "requested_market=%s, "
+            "effective_model_market=%s, "
+            "requested_path=%s, "
+            "resolved_path=%s, "
+            "cwd=%s",
+            requested_market,
+            effective_model_market,
             request.model_path,
             model_path,
             Path.cwd(),
@@ -81,7 +104,7 @@ def predict(request) -> PredictionResponse:
 
         model = _load_model(
             model_path=model_path,
-            market=request.market,
+            market=effective_model_market,
         )
 
         _validate_model(
@@ -89,13 +112,25 @@ def predict(request) -> PredictionResponse:
             features_count=len(request.features),
         )
 
-        probability, negative_probability = _predict_probabilities(
+        (
+            source_positive_probability,
+            source_negative_probability,
+        ) = _predict_probabilities(
             model=model,
             features=request.features,
         )
 
+        (
+            probability,
+            negative_probability,
+        ) = _map_market_probabilities(
+            source_positive_probability=(source_positive_probability),
+            source_negative_probability=(source_negative_probability),
+            inverse_derived=(source_market is not None),
+        )
+
         response = PredictionResponse(
-            market=request.market,
+            market=requested_market,
             probability=round(
                 probability,
                 4,
@@ -108,9 +143,14 @@ def predict(request) -> PredictionResponse:
 
         logger.info(
             "Prediction completed: "
-            "market=%s, probability=%.4f, "
+            "requested_market=%s, "
+            "effective_model_market=%s, "
+            "derived_inverse=%s, "
+            "probability=%.4f, "
             "negative_probability=%.4f",
-            request.market,
+            requested_market,
+            effective_model_market,
+            source_market is not None,
             probability,
             negative_probability,
         )
@@ -119,23 +159,22 @@ def predict(request) -> PredictionResponse:
 
     except (
         PredictionValidationError,
+        MarketDisabledError,
         ModelNotFoundError,
         ModelLoadError,
         ModelCompatibilityError,
         PredictionExecutionError,
     ):
-        # Queste eccezioni saranno convertite in risposte HTTP
-        # appropriate dal controller FastAPI.
         raise
 
     except Exception as exc:
         logger.exception(
-            "Unexpected prediction error: " "market=%s, model_path=%s",
-            getattr(
-                request,
-                "market",
-                None,
-            ),
+            "Unexpected prediction error: "
+            "requested_market=%s, "
+            "effective_model_market=%s, "
+            "model_path=%s",
+            requested_market,
+            effective_model_market,
             getattr(
                 request,
                 "model_path",
@@ -144,6 +183,35 @@ def predict(request) -> PredictionResponse:
         )
 
         raise PredictionExecutionError("Unexpected error during prediction") from exc
+
+
+def _map_market_probabilities(
+    source_positive_probability: float,
+    source_negative_probability: float,
+    inverse_derived: bool,
+) -> tuple[float, float]:
+
+    if inverse_derived:
+        # Per un mercato derivato inverso:
+        #
+        # source class 0
+        # diventa derived class 1.
+        #
+        # HOME_WIN class 0:
+        # pareggio o vittoria ospite.
+        #
+        # DOUBLE_CHANCE_X2 class 1:
+        # pareggio o vittoria ospite.
+
+        return (
+            source_negative_probability,
+            source_positive_probability,
+        )
+
+    return (
+        source_positive_probability,
+        source_negative_probability,
+    )
 
 
 def _validate_request(
