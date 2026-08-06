@@ -4,3 +4,4 @@ joblib
 scikit-learn
 pydantic
 python-dotenv
+xgboost==3.2.0
