@@ -105,7 +105,11 @@ def is_market_enabled(
     if normalized_market is None:
         return False
 
-    return "*" in ENABLED_MARKETS or normalized_market in ENABLED_MARKETS
+    return (
+        "*" in ENABLED_MARKETS
+        or normalized_market in ENABLED_MARKETS
+        or normalized_market in DERIVED_INVERSE_MARKETS
+    )
 
 
 def get_inverse_source_market(

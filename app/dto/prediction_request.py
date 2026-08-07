@@ -11,14 +11,14 @@ class PredictionRequest(BaseModel):
 
     market: str = Field(min_length=1)
 
-    features: list[float]
+    features: list[float | None]
 
     @field_validator("features")
     @classmethod
     def validate_features(
         cls,
-        values: list[float],
-    ) -> list[float]:
+        values: list[float | None],
+    ) -> list[float | None]:
 
         if not values:
             raise ValueError("Features cannot be empty")

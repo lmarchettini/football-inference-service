@@ -246,9 +246,9 @@ def _validate_request(
     if features_array.ndim != 1:
         raise PredictionValidationError("Features must be a " "one-dimensional vector")
 
-    if not np.all(np.isfinite(features_array)):
+    if np.any(np.isinf(features_array)):
         raise PredictionValidationError(
-            "Features cannot contain " "NaN or infinite values"
+            "Features cannot contain infinite values"
         )
 
 
